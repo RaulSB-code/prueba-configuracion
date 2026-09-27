@@ -18,8 +18,11 @@ jobs:
       - name: Reconstruct alpha40 source
         shell: pwsh
         run: |
-          $parts = Get-ChildItem hkbuild/src.part* | Sort-Object Name
-          $b64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
+          # src.part01 lost one base64 character during upload; the a/b/c files are its exact replacement.
+          # src.part08a is only a prefix retry; src.part08 is the complete final part.
+          $names = @('src.part00','src.part01a','src.part01b','src.part01c','src.part02','src.part03','src.part04','src.part05','src.part06','src.part07','src.part08')
+          $parts = $names | ForEach-Object { Get-Item ("hkbuild/" + $_) }
+          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ''
           [IO.File]::WriteAllBytes('hkbuild/source.tar.xz', [Convert]::FromBase64String($b64))
           New-Item -ItemType Directory -Force hkbuild/srcroot | Out-Null
           tar -xJf hkbuild/source.tar.xz -C hkbuild/srcroot
