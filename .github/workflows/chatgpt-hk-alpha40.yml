@@ -1,0 +1,24 @@
+name: Build HK Local8 Stag Fix
+
+on:
+  push:
+    branches:
+      - chatgpt-hk-alpha40-build
+    paths:
+      - 'hk-stagfix/**'
+      - '.github/workflows/chatgpt-hk-alpha40.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build
+        run: dotnet build hk-stagfix/Local8StagFix.csproj -c Release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HollowKnightLocal8-alpha40-stagfix
+          path: hk-stagfix/bin/Release/netstandard2.0/HollowKnightLocal8StagFix.dll
