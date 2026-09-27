@@ -16,9 +16,37 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
-      - name: Build
-        run: dotnet build hk-stagfix/Local8StagFix.csproj -c Release
+      - name: Download Modding API v77 refs
+        run: |
+          curl -L --fail --retry 3 -o api.zip https://github.com/hk-modding/api/releases/download/1.5.78.11833-77/moddingapi.v77.windows.zip
+          unzip -q api.zip -d api
+          find api -name Assembly-CSharp.dll -print
+      - name: Compile
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANAGED="$(dirname "$(find api -name Assembly-CSharp.dll -print -quit)")"
+          CSC="$(find /usr/share/dotnet/sdk -path '*/Roslyn/bincore/csc.dll' | sort -V | tail -1)"
+          OUT="$PWD/out"
+          mkdir -p "$OUT"
+          RSP="$OUT/compile.rsp"
+          {
+            echo "-nologo"
+            echo "-nostdlib+"
+            echo "-target:library"
+            echo "-langversion:latest"
+            echo "-optimize+"
+            echo "-deterministic+"
+            echo "-debug:portable"
+            echo "-out:$OUT/HollowKnightLocal8StagFix.dll"
+            find "$MANAGED" -maxdepth 1 -type f -name '*.dll' ! -iname 'UnitySceneRepacker.dll' -print0 | sort -z | while IFS= read -r -d '' dll; do
+              printf '%s\n' "-r:$dll"
+            done
+            echo "$PWD/hk-stagfix/Local8StagFix.cs"
+          } > "$RSP"
+          dotnet "$CSC" "@$RSP"
+          file "$OUT/HollowKnightLocal8StagFix.dll"
       - uses: actions/upload-artifact@v4
         with:
           name: HollowKnightLocal8-alpha40-stagfix
-          path: hk-stagfix/bin/Release/netstandard2.0/HollowKnightLocal8StagFix.dll
+          path: out/HollowKnightLocal8StagFix.dll
