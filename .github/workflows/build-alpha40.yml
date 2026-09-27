@@ -1,0 +1,93 @@
+name: Build HollowKnight Local8 alpha40
+
+on:
+  push:
+    branches: [chatgpt-hk-alpha40-build]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Reconstruct alpha40 source
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem hkbuild/src.part* | Sort-Object Name
+          $b64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
+          [IO.File]::WriteAllBytes('hkbuild/source.tar.xz', [Convert]::FromBase64String($b64))
+          New-Item -ItemType Directory -Force hkbuild/srcroot | Out-Null
+          tar -xJf hkbuild/source.tar.xz -C hkbuild/srcroot
+          Get-ChildItem hkbuild/srcroot/src/*.cs | Measure-Object | ForEach-Object { Write-Host "Source files: $($_.Count)" }
+
+      - name: Download Hollow Knight reference package
+        shell: pwsh
+        run: |
+          $v='1.0.0-hollowknight.1.5.78.11833.api77'
+          $url="https://api.nuget.org/v3-flatcontainer/hollowknight.gamelibs/$v/hollowknight.gamelibs.$v.nupkg"
+          Invoke-WebRequest $url -OutFile hkbuild/gamelibs.zip
+          Expand-Archive hkbuild/gamelibs.zip -DestinationPath hkbuild/gamelibs -Force
+          $refs = Get-ChildItem hkbuild/gamelibs/ref/net472 -Filter *.dll
+          Write-Host "Game refs: $($refs.Count)"
+          if (-not (Test-Path hkbuild/gamelibs/ref/net472/Assembly-CSharp.dll)) { throw 'Assembly-CSharp.dll missing from GameLibs package' }
+
+      - name: Download HookGen and generate MMHOOK assemblies
+        shell: pwsh
+        run: |
+          $v='22.7.31.1'
+          $url="https://api.nuget.org/v3-flatcontainer/monomod.runtimedetour.hookgen/$v/monomod.runtimedetour.hookgen.$v.nupkg"
+          Invoke-WebRequest $url -OutFile hkbuild/hookgen.zip
+          Expand-Archive hkbuild/hookgen.zip -DestinationPath hkbuild/hookgen -Force
+          $exe = Get-ChildItem hkbuild/hookgen -Recurse -Filter MonoMod.RuntimeDetour.HookGen.exe | Select-Object -First 1
+          if (-not $exe) { throw 'HookGen exe not found' }
+          Copy-Item hkbuild/gamelibs/ref/net472/*.dll $exe.Directory.FullName -Force
+          Push-Location $exe.Directory.FullName
+          & $exe.FullName (Resolve-Path "$env:GITHUB_WORKSPACE/hkbuild/gamelibs/ref/net472/Assembly-CSharp.dll")
+          if ($LASTEXITCODE -ne 0) { throw "HookGen Assembly-CSharp failed: $LASTEXITCODE" }
+          & $exe.FullName (Resolve-Path "$env:GITHUB_WORKSPACE/hkbuild/gamelibs/ref/net472/PlayMaker.dll")
+          if ($LASTEXITCODE -ne 0) { throw "HookGen PlayMaker failed: $LASTEXITCODE" }
+          Pop-Location
+          $hooks = Get-ChildItem $exe.Directory.FullName -Filter MMHOOK_*.dll
+          if ($hooks.Count -lt 2) { throw "Expected MMHOOK assemblies, found $($hooks.Count)" }
+          New-Item -ItemType Directory -Force hkbuild/generated | Out-Null
+          Copy-Item $hooks.FullName hkbuild/generated -Force
+          Get-ChildItem hkbuild/generated
+
+      - name: Compile alpha40
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force hkbuild/out | Out-Null
+          $sdk = dotnet --version
+          $csc = "$env:ProgramFiles/dotnet/sdk/$sdk/Roslyn/bincore/csc.dll"
+          if (-not (Test-Path $csc)) { throw "csc not found: $csc" }
+
+          $framework = 'C:/Program Files (x86)/Reference Assemblies/Microsoft/Framework/.NETFramework/v4.7.2'
+          if (-not (Test-Path $framework)) { throw "net472 refs missing" }
+
+          $refs = @()
+          $refs += Get-ChildItem $framework -Filter *.dll | ForEach-Object { "-reference:$($_.FullName)" }
+          $refs += Get-ChildItem hkbuild/gamelibs/ref/net472 -Filter *.dll | ForEach-Object { "-reference:$($_.FullName)" }
+          $refs += Get-ChildItem hkbuild/generated -Filter *.dll | ForEach-Object { "-reference:$($_.FullName)" }
+
+          $srcs = Get-ChildItem hkbuild/srcroot/src -Filter *.cs | ForEach-Object { $_.FullName }
+          & dotnet $csc -nologo -target:library -langversion:latest -optimize+ -deterministic+ -nostdlib+ "-out:$env:GITHUB_WORKSPACE/hkbuild/out/HollowKnightLocal8.dll" @refs @srcs
+          if ($LASTEXITCODE -ne 0) { throw "Compilation failed: $LASTEXITCODE" }
+
+          $dll = Get-Item hkbuild/out/HollowKnightLocal8.dll
+          Write-Host "Built $($dll.FullName) $($dll.Length) bytes"
+          $bytes=[IO.File]::ReadAllBytes($dll.FullName)
+          $ascii=[Text.Encoding]::ASCII.GetString($bytes)
+          if (-not $ascii.Contains('0.3.25-alpha40')) { throw 'Version marker alpha40 not found in DLL' }
+          if (-not $ascii.Contains('STAG MENU')) { throw 'STAG MENU marker not found in DLL' }
+
+      - name: Upload DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: HollowKnightLocal8-alpha40
+          path: hkbuild/out/HollowKnightLocal8.dll
+          if-no-files-found: error
