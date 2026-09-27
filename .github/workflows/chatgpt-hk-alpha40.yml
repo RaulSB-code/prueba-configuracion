@@ -26,6 +26,8 @@ jobs:
         run: |
           set -euo pipefail
           MANAGED="$(dirname "$(find api -name Assembly-CSharp.dll -print -quit)")"
+          echo "Assembly-CSharp dir: $MANAGED"
+          find api -type f -name '*.dll' -printf '%p\n' | sort
           CSC="$(find /usr/share/dotnet/sdk -path '*/Roslyn/bincore/csc.dll' | sort -V | tail -1)"
           OUT="$PWD/out"
           mkdir -p "$OUT"
@@ -39,7 +41,7 @@ jobs:
             echo "-deterministic+"
             echo "-debug:portable"
             echo "-out:$OUT/HollowKnightLocal8StagFix.dll"
-            find "$MANAGED" -maxdepth 1 -type f -name '*.dll' ! -iname 'UnitySceneRepacker.dll' -print0 | sort -z | while IFS= read -r -d '' dll; do
+            find api -type f -name '*.dll' ! -iname 'UnitySceneRepacker.dll' -print0 | sort -z | while IFS= read -r -d '' dll; do
               printf '%s\n' "-r:$dll"
             done
             echo "$PWD/hk-stagfix/Local8StagFix.cs"
