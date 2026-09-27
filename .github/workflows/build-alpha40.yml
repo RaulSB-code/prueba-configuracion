@@ -26,7 +26,10 @@ jobs:
           [IO.File]::WriteAllBytes('hkbuild/source.tar.xz', [Convert]::FromBase64String($b64))
           New-Item -ItemType Directory -Force hkbuild/srcroot | Out-Null
           tar -xJf hkbuild/source.tar.xz -C hkbuild/srcroot
-          Get-ChildItem hkbuild/srcroot/src/*.cs | Measure-Object | ForEach-Object { Write-Host "Source files: $($_.Count)" }
+          if ($LASTEXITCODE -ne 0) { Write-Warning "Truncated source archive; continuing diagnostic extraction"; $global:LASTEXITCODE = 0 }
+          $src = Get-ChildItem hkbuild/srcroot/src/*.cs | Sort-Object Name
+          Write-Host "Source files: $($src.Count)"
+          $src | ForEach-Object { Write-Host ("SRC " + $_.Name) }
 
       - name: Download Hollow Knight reference package
         shell: pwsh
