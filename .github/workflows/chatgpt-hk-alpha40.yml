@@ -1,4 +1,4 @@
-name: Build HK Local8 Stag Fix
+name: Build HK Local8 Dream Fix
 
 on:
   push:
@@ -40,15 +40,15 @@ jobs:
             echo "-optimize+"
             echo "-deterministic+"
             echo "-debug:portable"
-            echo "-out:$OUT/HollowKnightLocal8StagFix.dll"
+            echo "-out:$OUT/Local8DreamTransitionFix-alpha83.dll"
             find api -type f -name '*.dll' ! -iname 'UnitySceneRepacker.dll' -print0 | sort -z | while IFS= read -r -d '' dll; do
               printf '%s\n' "-r:$dll"
             done
             echo "$PWD/hk-stagfix/Local8StagFix.cs"
           } > "$RSP"
           dotnet "$CSC" "@$RSP"
-          file "$OUT/HollowKnightLocal8StagFix.dll"
+          file "$OUT/Local8DreamTransitionFix-alpha83.dll"
       - uses: actions/upload-artifact@v4
         with:
-          name: HollowKnightLocal8-alpha40-stagfix
-          path: out/HollowKnightLocal8StagFix.dll
+          name: Local8DreamTransitionFix-alpha83
+          path: out/Local8DreamTransitionFix-alpha83.dll
