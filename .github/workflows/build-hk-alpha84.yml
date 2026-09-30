@@ -11,7 +11,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -19,65 +19,83 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Reconstruct alpha84 source
-        shell: bash
+        shell: pwsh
         run: |
-          set -euo pipefail
-          mkdir -p work/assets
-          tr -d '\r\n' < a84/source.b64 | base64 -d > source.tar.xz
+          New-Item -ItemType Directory -Force work | Out-Null
+          $b64=(Get-Content a84/source.b64 -Raw) -replace '\s',''
+          [IO.File]::WriteAllBytes('source.tar.xz',[Convert]::FromBase64String($b64))
           tar -xJf source.tar.xz -C work
-          tr -d '\r\n' < a84/RoomWaitFrame.b64 | base64 -d > work/assets/RoomWaitFrame.png
-          test -s work/src/Plugin.cs
-          test -s work/assets/RoomWaitFrame.png
-          sed -i 's/0.3.49-alpha84/0.3.47-alpha84/g' work/src/Plugin.cs
-          grep -q '0.3.47-alpha84' work/src/Plugin.cs
-          grep -q 'class NativeDreamFx' work/src/NativeDreamFx.cs
-          grep -q 'TeleportTrail' work/src/NativeDreamFx.cs
-          grep -q 'TeleportTrail' work/src/ArenaGather.cs
-          grep -q 'TeleportTrail' work/src/WorldRouting.cs
-          grep -q 'TeleportTrail' work/src/CoopSession.cs
+          New-Item -ItemType Directory -Force work/assets | Out-Null
+          $asset=(Get-Content a84/RoomWaitFrame.b64 -Raw) -replace '\s',''
+          [IO.File]::WriteAllBytes('work/assets/RoomWaitFrame.png',[Convert]::FromBase64String($asset))
+          $plugin=Get-Content work/src/Plugin.cs -Raw
+          $plugin=$plugin.Replace('0.3.49-alpha84','0.3.47-alpha84')
+          Set-Content work/src/Plugin.cs $plugin -NoNewline
+          if (-not $plugin.Contains('0.3.47-alpha84')) { throw 'alpha84 version marker missing' }
+          if (-not (Select-String -Quiet -Path work/src/NativeDreamFx.cs -Pattern 'TeleportTrail')) { throw 'TeleportTrail missing' }
+          foreach($p in @('ArenaGather.cs','WorldRouting.cs','CoopSession.cs')) {
+            if (-not (Select-String -Quiet -Path ("work/src/"+$p) -Pattern 'TeleportTrail')) { throw "TeleportTrail missing from $p" }
+          }
 
-      - name: Download Hollow Knight Modding API v77 references
-        shell: bash
+      - name: Download Modding API v77
+        shell: pwsh
         run: |
-          set -euo pipefail
-          curl -L --fail --retry 3 -o api.zip https://github.com/hk-modding/api/releases/download/1.5.78.11833-77/moddingapi.v77.windows.zip
-          unzip -q api.zip -d api
-          test -n "$(find api -type f -name Assembly-CSharp.dll -print -quit)"
-          test -n "$(find api -type f -name MMHOOK_Assembly-CSharp.dll -print -quit)"
-          test -n "$(find api -type f -name PlayMaker.dll -print -quit)"
-          find api -type f -name '*.dll' -print | sort
+          Invoke-WebRequest 'https://github.com/hk-modding/api/releases/download/1.5.78.11833-77/moddingapi.v77.windows.zip' -OutFile api.zip
+          Expand-Archive api.zip -DestinationPath api -Force
+          $asm=Get-ChildItem api -Recurse -Filter Assembly-CSharp.dll | Select-Object -First 1
+          $pm=Get-ChildItem api -Recurse -Filter PlayMaker.dll | Select-Object -First 1
+          if(-not $asm -or -not $pm){ throw 'Required game refs missing from Modding API package' }
+          Write-Host "Assembly-CSharp: $($asm.FullName)"
+          Write-Host "PlayMaker: $($pm.FullName)"
+
+      - name: Generate MMHOOK references
+        shell: pwsh
+        run: |
+          $v='22.7.31.1'
+          $url="https://api.nuget.org/v3-flatcontainer/monomod.runtimedetour.hookgen/$v/monomod.runtimedetour.hookgen.$v.nupkg"
+          Invoke-WebRequest $url -OutFile hookgen.zip
+          Expand-Archive hookgen.zip -DestinationPath hookgen -Force
+          $exe=Get-ChildItem hookgen -Recurse -Filter MonoMod.RuntimeDetour.HookGen.exe | Select-Object -First 1
+          if(-not $exe){ throw 'HookGen exe missing' }
+          $apiDlls=Get-ChildItem api -Recurse -Filter *.dll
+          Copy-Item $apiDlls.FullName $exe.Directory.FullName -Force
+          $asm=Get-ChildItem api -Recurse -Filter Assembly-CSharp.dll | Select-Object -First 1
+          $pm=Get-ChildItem api -Recurse -Filter PlayMaker.dll | Select-Object -First 1
+          Push-Location $exe.Directory.FullName
+          & $exe.FullName $asm.FullName
+          if($LASTEXITCODE -ne 0){ throw "HookGen Assembly-CSharp failed $LASTEXITCODE" }
+          & $exe.FullName $pm.FullName
+          if($LASTEXITCODE -ne 0){ throw "HookGen PlayMaker failed $LASTEXITCODE" }
+          Pop-Location
+          New-Item -ItemType Directory -Force generated | Out-Null
+          Copy-Item (Get-ChildItem $exe.Directory.FullName -Filter 'MMHOOK_*.dll').FullName generated -Force
+          if((Get-ChildItem generated -Filter 'MMHOOK_*.dll').Count -lt 2){ throw 'MMHOOK generation incomplete' }
 
       - name: Compile alpha84
-        shell: bash
+        shell: pwsh
         run: |
-          set -euo pipefail
-          CSC="$(find /usr/share/dotnet/sdk -path '*/Roslyn/bincore/csc.dll' | sort -V | tail -1)"
-          OUT="$PWD/out"
-          mkdir -p "$OUT"
-          RSP="$OUT/compile.rsp"
-          {
-            echo "-nologo"
-            echo "-nostdlib+"
-            echo "-target:library"
-            echo "-langversion:latest"
-            echo "-optimize+"
-            echo "-deterministic+"
-            echo "-debug:portable"
-            echo "-out:$OUT/HollowKnightLocal8-alpha84.dll"
-            echo "-resource:$PWD/work/assets/RoomWaitFrame.png,Local8.RoomWaitFrame"
-            find api -type f -name '*.dll' ! -iname 'UnitySceneRepacker.dll' -print0 | sort -z | while IFS= read -r -d '' dll; do
-              printf '%s\n' "-r:$dll"
-            done
-            find "$PWD/work/src" -maxdepth 1 -type f -name '*.cs' -print | sort
-          } > "$RSP"
-          dotnet "$CSC" "@$RSP"
-          file "$OUT/HollowKnightLocal8-alpha84.dll"
-          strings "$OUT/HollowKnightLocal8-alpha84.dll" | grep -q 'Hollow Knight Local 8'
-          strings "$OUT/HollowKnightLocal8-alpha84.dll" | grep -q '0.3.47-alpha84'
-          strings "$OUT/HollowKnightLocal8-alpha84.dll" | grep -q 'DREAM teleport trail'
+          New-Item -ItemType Directory -Force out | Out-Null
+          $sdk=dotnet --version
+          $csc="$env:ProgramFiles/dotnet/sdk/$sdk/Roslyn/bincore/csc.dll"
+          if(-not (Test-Path $csc)){ throw "csc missing: $csc" }
+          $framework='C:/Program Files (x86)/Reference Assemblies/Microsoft/Framework/.NETFramework/v4.7.2'
+          if(-not (Test-Path $framework)){ throw 'net472 refs missing' }
+          $refs=@()
+          $refs += Get-ChildItem $framework -Filter *.dll | ForEach-Object { "-reference:$($_.FullName)" }
+          $refs += Get-ChildItem api -Recurse -Filter *.dll | Where-Object { $_.Name -ne 'UnitySceneRepacker.dll' } | ForEach-Object { "-reference:$($_.FullName)" }
+          $refs += Get-ChildItem generated -Filter *.dll | ForEach-Object { "-reference:$($_.FullName)" }
+          $srcs=Get-ChildItem work/src -Filter *.cs | ForEach-Object { $_.FullName }
+          & dotnet $csc -nologo -target:library -langversion:latest -optimize+ -deterministic+ -nostdlib+ "-out:$env:GITHUB_WORKSPACE/out/HollowKnightLocal8-alpha84.dll" "-resource:$env:GITHUB_WORKSPACE/work/assets/RoomWaitFrame.png,Local8.RoomWaitFrame" @refs @srcs
+          if($LASTEXITCODE -ne 0){ throw "Compilation failed $LASTEXITCODE" }
+          $dll=Get-Item out/HollowKnightLocal8-alpha84.dll
+          Write-Host "Built $($dll.Length) bytes"
+          $bytes=[IO.File]::ReadAllBytes($dll.FullName)
+          $ascii=[Text.Encoding]::ASCII.GetString($bytes)
+          foreach($m in @('Hollow Knight Local 8','0.3.47-alpha84','DREAM teleport trail')) {
+            if(-not $ascii.Contains($m)){ throw "Marker missing: $m" }
+          }
 
-      - name: Upload DLL
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: HollowKnightLocal8-alpha84
           path: out/HollowKnightLocal8-alpha84.dll
