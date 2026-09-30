@@ -1,0 +1,31 @@
+name: Export 7zip Linux
+
+on:
+  push:
+    branches:
+      - chatgpt-hk-alpha84-main
+    paths:
+      - '.github/workflows/export-7zip.yml'
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install and package 7zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y 7zip
+          BIN="$(command -v 7zz || command -v 7z)"
+          echo "Using $BIN"
+          mkdir -p pack
+          cp "$BIN" pack/
+          ldd "$BIN" || true
+          tar -cJf 7zip-linux.tar.xz -C pack .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 7zip-linux
+          path: 7zip-linux.tar.xz
