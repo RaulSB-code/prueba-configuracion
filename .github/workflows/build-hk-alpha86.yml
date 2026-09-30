@@ -1,0 +1,110 @@
+name: Build HollowKnight Local8 alpha86
+
+on:
+  push:
+    branches:
+      - chatgpt-hk-alpha86-main
+    paths:
+      - 'a86/**'
+      - '.github/workflows/build-hk-alpha86.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Reconstruct base source
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force work | Out-Null
+          $b64=(Get-Content a84/source.b64 -Raw) -replace '\s',''
+          [IO.File]::WriteAllBytes('base.tar.xz',[Convert]::FromBase64String($b64))
+          tar -xJf base.tar.xz -C work
+          New-Item -ItemType Directory -Force work/assets | Out-Null
+          $asset=(Get-Content a84/RoomWaitFrame.b64 -Raw) -replace '\s',''
+          [IO.File]::WriteAllBytes('work/assets/RoomWaitFrame.png',[Convert]::FromBase64String($asset))
+
+      - name: Apply alpha86 patch
+        shell: pwsh
+        run: |
+          $parts=Get-ChildItem a86/patch.part* | Sort-Object Name
+          $b64=($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ''
+          [IO.File]::WriteAllBytes('alpha86-patch.tar.xz',[Convert]::FromBase64String($b64))
+          New-Item -ItemType Directory -Force patch | Out-Null
+          tar -xJf alpha86-patch.tar.xz -C patch
+          Write-Host 'PATCH CONTENTS:'
+          Get-ChildItem patch -Recurse -File | ForEach-Object { Write-Host $_.FullName }
+          Copy-Item patch/* work -Recurse -Force
+          $plugin=Get-Content work/src/Plugin.cs -Raw
+          $plugin=[regex]::Replace($plugin,'0\.3\.\d+-alpha\d+','0.3.47-alpha86')
+          Set-Content work/src/Plugin.cs $plugin -NoNewline
+          if(-not $plugin.Contains('0.3.47-alpha86')){throw 'alpha86 version marker missing'}
+          if(-not (Test-Path work/src/ChallengeSequence.cs)){throw 'ChallengeSequence.cs missing after patch'}
+          if(-not (Select-String -Quiet -Path work/src/ChallengeSequence.cs -Pattern 'Challenge Start')){throw 'Challenge Start support missing'}
+          if(-not (Select-String -Quiet -Path work/src/ChallengeSequence.cs -Pattern 'watchdog|Watchdog|Recover|Restore')){throw 'challenge watchdog marker missing'}
+          if(-not (Test-Path work/src/FlowerRules.cs)){throw 'FlowerRules missing; alpha85 regression'}
+          Write-Host 'Alpha86 source checks passed'
+
+      - name: Download Modding API v77
+        shell: pwsh
+        run: |
+          Invoke-WebRequest 'https://github.com/hk-modding/api/releases/download/1.5.78.11833-77/moddingapi.v77.windows.zip' -OutFile api.zip
+          Expand-Archive api.zip -DestinationPath api -Force
+          $asm=Get-ChildItem api -Recurse -Filter Assembly-CSharp.dll | Select-Object -First 1
+          $pm=Get-ChildItem api -Recurse -Filter PlayMaker.dll | Select-Object -First 1
+          if(-not $asm -or -not $pm){throw 'Required refs missing'}
+
+      - name: Generate MMHOOK references
+        shell: pwsh
+        run: |
+          $v='22.7.31.1'
+          Invoke-WebRequest "https://api.nuget.org/v3-flatcontainer/monomod.runtimedetour.hookgen/$v/monomod.runtimedetour.hookgen.$v.nupkg" -OutFile hookgen.zip
+          Expand-Archive hookgen.zip -DestinationPath hookgen -Force
+          $exe=Get-ChildItem hookgen -Recurse -Filter MonoMod.RuntimeDetour.HookGen.exe | Select-Object -First 1
+          if(-not $exe){throw 'HookGen missing'}
+          $apiDlls=Get-ChildItem api -Recurse -Filter *.dll
+          Copy-Item $apiDlls.FullName $exe.Directory.FullName -Force
+          $asm=Get-ChildItem api -Recurse -Filter Assembly-CSharp.dll | Select-Object -First 1
+          $pm=Get-ChildItem api -Recurse -Filter PlayMaker.dll | Select-Object -First 1
+          Push-Location $exe.Directory.FullName
+          & $exe.FullName $asm.FullName
+          if($LASTEXITCODE -ne 0){throw "HookGen Assembly-CSharp failed $LASTEXITCODE"}
+          & $exe.FullName $pm.FullName
+          if($LASTEXITCODE -ne 0){throw "HookGen PlayMaker failed $LASTEXITCODE"}
+          Pop-Location
+          New-Item -ItemType Directory -Force generated | Out-Null
+          Copy-Item (Get-ChildItem $exe.Directory.FullName -Filter 'MMHOOK_*.dll').FullName generated -Force
+
+      - name: Compile alpha86
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          $sdk=dotnet --version
+          $csc="$env:ProgramFiles/dotnet/sdk/$sdk/Roslyn/bincore/csc.dll"
+          $framework='C:/Program Files (x86)/Reference Assemblies/Microsoft/Framework/.NETFramework/v4.7.2'
+          $refs=@()
+          $refs += Get-ChildItem $framework -Filter *.dll | ForEach-Object { "-reference:$($_.FullName)" }
+          $refs += Get-ChildItem api -Recurse -Filter *.dll | Where-Object { $_.Name -ne 'UnitySceneRepacker.dll' } | ForEach-Object { "-reference:$($_.FullName)" }
+          $refs += Get-ChildItem generated -Filter *.dll | ForEach-Object { "-reference:$($_.FullName)" }
+          $srcs=Get-ChildItem work/src -Filter *.cs | ForEach-Object { $_.FullName }
+          & dotnet $csc -nologo -target:library -langversion:latest -optimize+ -deterministic+ -nostdlib+ "-out:$env:GITHUB_WORKSPACE/out/HollowKnightLocal8.dll" "-resource:$env:GITHUB_WORKSPACE/work/assets/RoomWaitFrame.png,Local8.RoomWaitFrame" @refs @srcs
+          if($LASTEXITCODE -ne 0){throw "Compilation failed $LASTEXITCODE"}
+          Copy-Item out/HollowKnightLocal8.dll out/HollowKnightLocal8-alpha86.dll -Force
+          $dll=Get-Item out/HollowKnightLocal8-alpha86.dll
+          Write-Host "Built $($dll.Length) bytes"
+          $bytes=[IO.File]::ReadAllBytes($dll.FullName)
+          $ascii=[Text.Encoding]::ASCII.GetString($bytes)
+          foreach($m in @('Hollow Knight Local 8','0.3.47-alpha86','Challenge Start')) {
+            if(-not $ascii.Contains($m)){throw "Marker missing: $m"}
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HollowKnightLocal8-alpha86
+          path: out/HollowKnightLocal8-alpha86.dll
+          if-no-files-found: error
