@@ -1,4 +1,4 @@
-name: Export alpha86 patch archive
+name: Export alpha86 v2 patch
 on:
   workflow_dispatch:
   push:
@@ -6,18 +6,17 @@ on:
     paths: ['.github/workflows/export-alpha86-patch.yml']
 jobs:
   export:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Rebuild archive
-        shell: pwsh
+      - name: Decode patch
+        shell: bash
         run: |
-          $parts=Get-ChildItem a86/patch.part* | Sort-Object Name
-          $b64=($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ''
-          [IO.File]::WriteAllBytes('alpha86-patch.tar.xz',[Convert]::FromBase64String($b64))
-          Get-FileHash alpha86-patch.tar.xz -Algorithm SHA256
-          Write-Host "Size=$((Get-Item alpha86-patch.tar.xz).Length)"
+          tr -d '\r\n\t ' < a86v2/alpha86.patch.gz.b64 | base64 -d > alpha86.patch.gz
+          gzip -dc alpha86.patch.gz > alpha86.patch
+          wc -c alpha86.patch
+          sed -n '1,80p' alpha86.patch
       - uses: actions/upload-artifact@v4
         with:
-          name: alpha86-patch-archive
-          path: alpha86-patch.tar.xz
+          name: alpha86-v2-plain-patch
+          path: alpha86.patch
