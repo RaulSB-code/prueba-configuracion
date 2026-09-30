@@ -1,5 +1,9 @@
 name: Build HollowKnight Local8 alpha84
 
+permissions:
+  contents: read
+  packages: read
+
 on:
   push:
     branches:
@@ -30,14 +34,41 @@ jobs:
           grep -q '0.3.49-alpha84' work/src/Plugin.cs
           grep -q 'class DreamSequence' work/src/DreamSequence.cs
           grep -q 'class CameraFadeRecovery' work/src/CameraFadeRecovery.cs
-      - name: Download HollowKnight GameLibs refs
+      - name: Restore HollowKnight GameLibs refs
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          curl -L --fail --retry 3 -o gamelibs.nupkg https://api.nuget.org/v3-flatcontainer/hollowknight.gamelibs/1.0.0-hollowknight.1.5.78.11833.api77/hollowknight.gamelibs.1.0.0-hollowknight.1.5.78.11833.api77.nupkg
-          unzip -q gamelibs.nupkg -d gamelibs
-          find gamelibs -type f -name '*.dll' -print | sort
-          test -n "$(find gamelibs -type f -name Assembly-CSharp.dll -print -quit)"
-          test -n "$(find gamelibs -type f -name UnityEngine.CoreModule.dll -print -quit)"
-          test -n "$(find gamelibs -type f -name PlayMaker.dll -print -quit)"
+          mkdir -p refproj
+          cat > refproj/refproj.csproj <<'EOF'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup><TargetFramework>netstandard2.0</TargetFramework></PropertyGroup>
+            <ItemGroup>
+              <PackageReference Include="HollowKnight.GameLibs" Version="1.0.0-hollowknight.1.5.78.11833.api77" />
+            </ItemGroup>
+          </Project>
+          EOF
+          cat > refproj/nuget.config <<EOF
+          <configuration>
+            <packageSources>
+              <clear />
+              <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+              <add key="hk-gamelibs" value="https://nuget.pkg.github.com/jakobhellermann/index.json" />
+            </packageSources>
+            <packageSourceCredentials>
+              <hk-gamelibs>
+                <add key="Username" value="${GITHUB_ACTOR}" />
+                <add key="ClearTextPassword" value="${GH_TOKEN}" />
+              </hk-gamelibs>
+            </packageSourceCredentials>
+          </configuration>
+          EOF
+          dotnet restore refproj/refproj.csproj --configfile refproj/nuget.config
+          GAMELIBS="$HOME/.nuget/packages/hollowknight.gamelibs/1.0.0-hollowknight.1.5.78.11833.api77"
+          test -d "$GAMELIBS"
+          find "$GAMELIBS" -type f -name '*.dll' -print | sort
+          test -n "$(find "$GAMELIBS" -type f -name Assembly-CSharp.dll -print -quit)"
+          test -n "$(find "$GAMELIBS" -type f -name UnityEngine.CoreModule.dll -print -quit)"
+          test -n "$(find "$GAMELIBS" -type f -name PlayMaker.dll -print -quit)"
       - name: Compile Local8
         shell: bash
         run: |
@@ -56,7 +87,8 @@ jobs:
             echo "-debug:portable"
             echo "-out:$OUT/HollowKnightLocal8.dll"
             echo "-resource:$PWD/work/assets/RoomWaitFrame.png,Local8.RoomWaitFrame"
-            find gamelibs -type f -name '*.dll' ! -iname 'UnitySceneRepacker.dll' -print0 | sort -z | while IFS= read -r -d '' dll; do
+            GAMELIBS="$HOME/.nuget/packages/hollowknight.gamelibs/1.0.0-hollowknight.1.5.78.11833.api77"
+            find "$GAMELIBS" -type f -name '*.dll' ! -iname 'UnitySceneRepacker.dll' -print0 | sort -z | while IFS= read -r -d '' dll; do
               printf '%s\n' "-r:$dll"
             done
             find "$PWD/work/src" -maxdepth 1 -type f -name '*.cs' -print | sort
