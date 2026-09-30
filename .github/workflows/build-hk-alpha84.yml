@@ -1,9 +1,5 @@
 name: Build HollowKnight Local8 alpha84
 
-permissions:
-  contents: read
-  packages: read
-
 on:
   push:
     branches:
@@ -11,6 +7,7 @@ on:
     paths:
       - 'a84/**'
       - '.github/workflows/build-hk-alpha84.yml'
+  workflow_dispatch:
 
 jobs:
   build:
@@ -20,56 +17,36 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
-      - name: Reconstruct source
+
+      - name: Reconstruct alpha84 source
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p work
+          mkdir -p work/assets
           tr -d '\r\n' < a84/source.b64 | base64 -d > source.tar.xz
           tar -xJf source.tar.xz -C work
-          mkdir -p work/assets
           tr -d '\r\n' < a84/RoomWaitFrame.b64 | base64 -d > work/assets/RoomWaitFrame.png
           test -s work/src/Plugin.cs
           test -s work/assets/RoomWaitFrame.png
-          grep -q '0.3.49-alpha84' work/src/Plugin.cs
-          grep -q 'class DreamSequence' work/src/DreamSequence.cs
-          grep -q 'class CameraFadeRecovery' work/src/CameraFadeRecovery.cs
-      - name: Restore HollowKnight GameLibs refs
-        env:
-          GH_TOKEN: ${{ github.token }}
+          grep -q '0.3.47-alpha84' work/src/Plugin.cs
+          grep -q 'class NativeDreamFx' work/src/NativeDreamFx.cs
+          grep -q 'TeleportTrail' work/src/NativeDreamFx.cs
+          grep -q 'TeleportTrail' work/src/ArenaGather.cs
+          grep -q 'TeleportTrail' work/src/WorldRouting.cs
+          grep -q 'TeleportTrail' work/src/CoopSession.cs
+
+      - name: Download Hollow Knight Modding API v77 references
+        shell: bash
         run: |
-          mkdir -p refproj
-          cat > refproj/refproj.csproj <<'EOF'
-          <Project Sdk="Microsoft.NET.Sdk">
-            <PropertyGroup><TargetFramework>netstandard2.0</TargetFramework></PropertyGroup>
-            <ItemGroup>
-              <PackageReference Include="HollowKnight.GameLibs" Version="1.0.0-hollowknight.1.5.78.11833.api77" />
-            </ItemGroup>
-          </Project>
-          EOF
-          cat > refproj/nuget.config <<EOF
-          <configuration>
-            <packageSources>
-              <clear />
-              <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
-              <add key="hk-gamelibs" value="https://nuget.pkg.github.com/jakobhellermann/index.json" />
-            </packageSources>
-            <packageSourceCredentials>
-              <hk-gamelibs>
-                <add key="Username" value="${GITHUB_ACTOR}" />
-                <add key="ClearTextPassword" value="${GH_TOKEN}" />
-              </hk-gamelibs>
-            </packageSourceCredentials>
-          </configuration>
-          EOF
-          dotnet restore refproj/refproj.csproj --configfile refproj/nuget.config
-          GAMELIBS="$HOME/.nuget/packages/hollowknight.gamelibs/1.0.0-hollowknight.1.5.78.11833.api77"
-          test -d "$GAMELIBS"
-          find "$GAMELIBS" -type f -name '*.dll' -print | sort
-          test -n "$(find "$GAMELIBS" -type f -name Assembly-CSharp.dll -print -quit)"
-          test -n "$(find "$GAMELIBS" -type f -name UnityEngine.CoreModule.dll -print -quit)"
-          test -n "$(find "$GAMELIBS" -type f -name PlayMaker.dll -print -quit)"
-      - name: Compile Local8
+          set -euo pipefail
+          curl -L --fail --retry 3 -o api.zip https://github.com/hk-modding/api/releases/download/1.5.78.11833-77/moddingapi.v77.windows.zip
+          unzip -q api.zip -d api
+          test -n "$(find api -type f -name Assembly-CSharp.dll -print -quit)"
+          test -n "$(find api -type f -name MMHOOK_Assembly-CSharp.dll -print -quit)"
+          test -n "$(find api -type f -name PlayMaker.dll -print -quit)"
+          find api -type f -name '*.dll' -print | sort
+
+      - name: Compile alpha84
         shell: bash
         run: |
           set -euo pipefail
@@ -85,19 +62,22 @@ jobs:
             echo "-optimize+"
             echo "-deterministic+"
             echo "-debug:portable"
-            echo "-out:$OUT/HollowKnightLocal8.dll"
+            echo "-out:$OUT/HollowKnightLocal8-alpha84.dll"
             echo "-resource:$PWD/work/assets/RoomWaitFrame.png,Local8.RoomWaitFrame"
-            GAMELIBS="$HOME/.nuget/packages/hollowknight.gamelibs/1.0.0-hollowknight.1.5.78.11833.api77"
-            find "$GAMELIBS" -type f -name '*.dll' ! -iname 'UnitySceneRepacker.dll' -print0 | sort -z | while IFS= read -r -d '' dll; do
+            find api -type f -name '*.dll' ! -iname 'UnitySceneRepacker.dll' -print0 | sort -z | while IFS= read -r -d '' dll; do
               printf '%s\n' "-r:$dll"
             done
             find "$PWD/work/src" -maxdepth 1 -type f -name '*.cs' -print | sort
           } > "$RSP"
           dotnet "$CSC" "@$RSP"
-          cp "$OUT/HollowKnightLocal8.dll" "$OUT/HollowKnightLocal8-alpha84.dll"
           file "$OUT/HollowKnightLocal8-alpha84.dll"
           strings "$OUT/HollowKnightLocal8-alpha84.dll" | grep -q 'Hollow Knight Local 8'
-      - uses: actions/upload-artifact@v4
+          strings "$OUT/HollowKnightLocal8-alpha84.dll" | grep -q '0.3.47-alpha84'
+          strings "$OUT/HollowKnightLocal8-alpha84.dll" | grep -q 'DREAM teleport trail'
+
+      - name: Upload DLL
+        uses: actions/upload-artifact@v4
         with:
           name: HollowKnightLocal8-alpha84
           path: out/HollowKnightLocal8-alpha84.dll
+          if-no-files-found: error
