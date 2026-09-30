@@ -19,11 +19,13 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y 7zip
-          BIN="$(command -v 7zz || command -v 7z)"
-          echo "Using $BIN"
+          echo "7zip package files:"
+          dpkg -L 7zip
           mkdir -p pack
-          cp "$BIN" pack/
-          ldd "$BIN" || true
+          cp -a /usr/lib/7zip pack/ || true
+          cp -a /usr/bin/7z* pack/ || true
+          cp -a /usr/bin/7zz* pack/ || true
+          find pack -maxdepth 3 -type f -ls
           tar -cJf 7zip-linux.tar.xz -C pack .
       - uses: actions/upload-artifact@v4
         with:
