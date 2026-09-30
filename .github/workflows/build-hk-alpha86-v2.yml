@@ -36,12 +36,10 @@ jobs:
           $b64=(Get-Content a86v2/alpha86.patch.gz.b64 -Raw) -replace '\s',''
           [IO.File]::WriteAllBytes('alpha86.patch.gz',[Convert]::FromBase64String($b64))
           gzip -d -c alpha86.patch.gz | Set-Content alpha86.patch
-          Push-Location work
-          git apply --check ../alpha86.patch
+          git apply --check --directory=work alpha86.patch
           if($LASTEXITCODE -ne 0){ throw 'alpha86 patch check failed' }
-          git apply ../alpha86.patch
+          git apply --directory=work alpha86.patch
           if($LASTEXITCODE -ne 0){ throw 'alpha86 patch apply failed' }
-          Pop-Location
           foreach($p in @('src/FlowerRules.cs','src/ChallengeSequence.cs')) {
             if(-not (Test-Path ("work/"+$p))){ throw "Missing $p" }
           }
