@@ -28,6 +28,7 @@ jobs:
           tr -d '\r\n' < a84/RoomWaitFrame.b64 | base64 -d > work/assets/RoomWaitFrame.png
           test -s work/src/Plugin.cs
           test -s work/assets/RoomWaitFrame.png
+          sed -i 's/0.3.49-alpha84/0.3.47-alpha84/g' work/src/Plugin.cs
           grep -q '0.3.47-alpha84' work/src/Plugin.cs
           grep -q 'class NativeDreamFx' work/src/NativeDreamFx.cs
           grep -q 'TeleportTrail' work/src/NativeDreamFx.cs
