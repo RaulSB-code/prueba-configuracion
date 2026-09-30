@@ -1,0 +1,39 @@
+name: Export Local8 Linux build toolchain
+
+on:
+  push:
+    branches: [chatgpt-hk-alpha86-main]
+    paths: ['.github/workflows/export-local8-toolchain.yml']
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Prepare compiler and refs
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDK="$(dotnet --version)"
+          mkdir -p pack/dotnet/host pack/dotnet/shared pack/dotnet/sdk/$SDK/Roslyn pack/net472 pack/tools
+          cp /usr/share/dotnet/dotnet pack/dotnet/
+          cp -a /usr/share/dotnet/host/fxr pack/dotnet/host/
+          cp -a /usr/share/dotnet/shared/Microsoft.NETCore.App pack/dotnet/shared/
+          cp -a /usr/share/dotnet/sdk/$SDK/Roslyn/bincore pack/dotnet/sdk/$SDK/Roslyn/
+          curl -L --fail --retry 3 -o net472.nupkg https://api.nuget.org/v3-flatcontainer/microsoft.netframework.referenceassemblies.net472/1.0.3/microsoft.netframework.referenceassemblies.net472.1.0.3.nupkg
+          unzip -q net472.nupkg -d net472pkg
+          cp -a net472pkg/build/.NETFramework/v4.7.2/. pack/net472/
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq p7zip-full
+          cp "$(command -v 7z)" pack/tools/7z
+          ldd "$(command -v 7z)" || true
+          tar -czf local8-linux-toolchain.tar.gz -C pack .
+          ls -lh local8-linux-toolchain.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: local8-linux-toolchain
+          path: local8-linux-toolchain.tar.gz
