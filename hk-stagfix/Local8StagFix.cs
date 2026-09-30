@@ -3,290 +3,336 @@ using System.Collections;
 using System.Reflection;
 using Modding;
 
-namespace KO.HollowKnight8.StagFix
+namespace KO.HollowKnight8.DreamFix
 {
-    public sealed class Local8StagFix : Mod
+    public sealed class Local8DreamTransitionFix : Mod
     {
-        private object _uiList;
-        private Type _gameObjectType;
-        private Type _playMakerType;
-        private Type _inputType;
-        private Type _keyCodeType;
-        private Type _inputManagerType;
-        private PropertyInfo _devicesProperty;
-        private MethodInfo _findGameObject;
-        private MethodInfo _getComponentsByType;
-        private MethodInfo _getKeyDown;
-        private bool _menuLogged;
+        private bool armed;
+        private string lastTarget;
+        private int sceneTicks;
+        private bool wakeSent;
+        private Type playMakerType;
+        private Type gameObjectType;
+        private Type objectType;
+        private MethodInfo findObjectsOfType;
+        private MethodInfo getComponentsByType;
 
-        public Local8StagFix() : base("Local8 Stag Menu Fix") { }
+        public Local8DreamTransitionFix() : base("Local8 Dream Transition Fix") { }
 
         public override string GetVersion()
         {
-            return "0.3.25-alpha40-stagfix";
+            return "0.3.47-alpha83-dreamfix";
         }
 
         public override void Initialize()
         {
+            ModHooks.BeforeSceneLoadHook += BeforeSceneLoad;
+            ModHooks.SceneChanged += SceneChanged;
             ModHooks.HeroUpdateHook += Tick;
-            Log("alpha40 Stag menu fix loaded");
+            Log("alpha83 Dream transition proxy fix loaded");
+        }
+
+        private string BeforeSceneLoad(string scene)
+        {
+            try
+            {
+                lastTarget = scene ?? "";
+                if (!IsDreamNailCollection(scene))
+                    return scene;
+
+                object primary = GetPrimaryHero();
+                if (primary == null)
+                {
+                    LogError("DREAMFIX pre-load: primary hero missing");
+                    return scene;
+                }
+
+                bool wasReturning = GetDreamBool(primary, "Dream Returning");
+                if (!wasReturning)
+                {
+                    SetDreamBool(primary, "Dream Returning", true);
+                    TryEnterWithoutInput(primary);
+                    armed = true;
+                    wakeSent = false;
+                    sceneTicks = 0;
+                    Log("DREAMFIX mirrored Dream Returning to P1 before " + scene);
+                }
+                else
+                {
+                    armed = false;
+                    Log("DREAMFIX P1 already Dream Returning before " + scene);
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError("DREAMFIX pre-load failed: " + ex);
+            }
+            return scene;
+        }
+
+        private void SceneChanged(string scene)
+        {
+            if (!armed) return;
+            if (IsDreamNailCollection(scene))
+            {
+                sceneTicks = 0;
+                wakeSent = false;
+                Log("DREAMFIX entered " + scene + "; waiting for vanilla Dream Return");
+            }
+            else if (!string.Equals(scene, lastTarget, StringComparison.OrdinalIgnoreCase))
+            {
+                armed = false;
+            }
         }
 
         private void Tick()
         {
+            if (!armed) return;
+
+            string current = CurrentSceneName();
+            if (!IsDreamNailCollection(current)) return;
+
+            sceneTicks++;
+
+            // Give the native Dream Return FSM plenty of time to send DREAM WAKE itself.
+            if (sceneTicks < 20) return;
+
             try
             {
-                object ui = FindUiList();
-                if (ui == null)
+                object control = FindFsm("Witch Control", "Control");
+                if (control == null) return;
+
+                string state = ActiveStateName(control);
+                if (!wakeSent && string.Equals(state, "Idle", StringComparison.OrdinalIgnoreCase))
                 {
-                    _menuLogged = false;
+                    SendEvent(control, "DREAM WAKE");
+                    wakeSent = true;
+                    Log("DREAMFIX fallback DREAM WAKE sent to Witch Control");
                     return;
                 }
 
-                if (!_menuLogged)
+                // Once the scene has left Idle/first waiting state, the native sequence owns everything.
+                if (wakeSent && !string.Equals(state, "Idle", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(state, "Pause", StringComparison.OrdinalIgnoreCase))
                 {
-                    Log("STAG MENU open");
-                    _menuLogged = true;
-                }
-
-                if (KeyPressed("UpArrow") || KeyPressed("W"))
-                {
-                    Send(ui, "UP", "keyboard");
+                    Log("DREAMFIX native dream sequence running state=" + state);
+                    armed = false;
                     return;
                 }
 
-                if (KeyPressed("DownArrow") || KeyPressed("S"))
+                // Final fallback only for the exact broken P2 path: make sure the primary
+                // still carries the flag if another system reset it during roster respawn.
+                if (sceneTicks == 120)
                 {
-                    Send(ui, "DOWN", "keyboard");
-                    return;
-                }
-
-                foreach (object device in GetDevices())
-                {
-                    if (ControlPressed(device, "DPadUp") || ControlPressed(device, "LeftStickUp"))
+                    object primary = GetPrimaryHero();
+                    if (primary != null && !GetDreamBool(primary, "Dream Returning"))
                     {
-                        Send(ui, "UP", DeviceName(device));
-                        return;
-                    }
-
-                    if (ControlPressed(device, "DPadDown") || ControlPressed(device, "LeftStickDown"))
-                    {
-                        Send(ui, "DOWN", DeviceName(device));
-                        return;
-                    }
-
-                    if (ControlPressed(device, "Action1"))
-                    {
-                        Send(ui, "SELECTION MADE", DeviceName(device));
-                        return;
-                    }
-
-                    if (ControlPressed(device, "Action2"))
-                    {
-                        Send(ui, "SELECTION MADE CANCEL", DeviceName(device));
-                        return;
+                        SetDreamBool(primary, "Dream Returning", true);
+                        TryEnterWithoutInput(primary);
+                        Log("DREAMFIX restored P1 Dream Returning after scene spawn");
                     }
                 }
             }
             catch (Exception ex)
             {
-                _uiList = null;
-                LogError("STAG MENU tick failed: " + ex);
+                LogError("DREAMFIX tick failed: " + ex);
+                armed = false;
             }
         }
 
-        private object FindUiList()
+        private static bool IsDreamNailCollection(string scene)
         {
-            if (_uiList != null)
+            if (string.IsNullOrEmpty(scene)) return false;
+            string n = scene.Replace("_", "").ToLowerInvariant();
+            return n.Contains("dreamnailcollection");
+        }
+
+        private object GetPrimaryHero()
+        {
+            foreach (Assembly a in AppDomain.CurrentDomain.GetAssemblies())
             {
-                try
+                Type t = a.GetType("HeroController", false);
+                if (t == null) continue;
+
+                PropertyInfo p = t.GetProperty("instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                if (p != null)
                 {
-                    object go = GetProperty(_uiList, "gameObject");
-                    if (go != null)
-                    {
-                        object active = GetProperty(go, "activeInHierarchy");
-                        if (active is bool && (bool)active) return _uiList;
-                    }
+                    object v = p.GetValue(null, null);
+                    if (v != null) return v;
                 }
-                catch { }
-                _uiList = null;
+
+                FieldInfo f = t.GetField("instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                if (f != null)
+                {
+                    object v = f.GetValue(null);
+                    if (v != null) return v;
+                }
             }
+            return null;
+        }
 
-            ResolveUnityAndPlayMaker();
-            if (_findGameObject == null || _playMakerType == null) return null;
+        private bool GetDreamBool(object hero, string variable)
+        {
+            object fsm = FindFsmOnHero(hero, "Dream Return");
+            if (fsm == null) return false;
+            object vars = GetProperty(fsm, "FsmVariables");
+            if (vars == null) return false;
+            MethodInfo find = vars.GetType().GetMethod("FindFsmBool", new Type[] { typeof(string) });
+            if (find == null) return false;
+            object b = find.Invoke(vars, new object[] { variable });
+            if (b == null) return false;
+            object value = GetProperty(b, "Value");
+            return value is bool && (bool)value;
+        }
 
-            object gameObject = _findGameObject.Invoke(null, new object[] { "Stag Map/UI List Stag" });
-            if (gameObject == null)
-                gameObject = _findGameObject.Invoke(null, new object[] { "UI List Stag" });
-            if (gameObject == null) return null;
+        private void SetDreamBool(object hero, string variable, bool value)
+        {
+            object fsm = FindFsmOnHero(hero, "Dream Return");
+            if (fsm == null) throw new InvalidOperationException("Dream Return FSM missing on P1");
+            object vars = GetProperty(fsm, "FsmVariables");
+            if (vars == null) throw new InvalidOperationException("Dream Return FsmVariables missing");
+            MethodInfo find = vars.GetType().GetMethod("FindFsmBool", new Type[] { typeof(string) });
+            if (find == null) throw new InvalidOperationException("FindFsmBool missing");
+            object b = find.Invoke(vars, new object[] { variable });
+            if (b == null) throw new InvalidOperationException(variable + " missing");
+            PropertyInfo vp = b.GetType().GetProperty("Value", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            if (vp == null || !vp.CanWrite) throw new InvalidOperationException(variable + ".Value not writable");
+            vp.SetValue(b, value, null);
+        }
 
-            if (_getComponentsByType == null)
+        private object FindFsmOnHero(object hero, string fsmName)
+        {
+            object go = GetProperty(hero, "gameObject");
+            if (go == null) return null;
+            ResolveTypes();
+            if (playMakerType == null || gameObjectType == null) return null;
+            if (getComponentsByType == null)
             {
-                _getComponentsByType = _gameObjectType.GetMethod(
+                getComponentsByType = gameObjectType.GetMethod(
                     "GetComponents",
                     BindingFlags.Public | BindingFlags.Instance,
                     null,
                     new Type[] { typeof(Type) },
                     null);
             }
-
-            if (_getComponentsByType == null) return null;
-
-            Array components = _getComponentsByType.Invoke(gameObject, new object[] { _playMakerType }) as Array;
-            if (components == null) return null;
-
-            foreach (object component in components)
+            if (getComponentsByType == null) return null;
+            Array fsms = getComponentsByType.Invoke(go, new object[] { playMakerType }) as Array;
+            if (fsms == null) return null;
+            foreach (object fsm in fsms)
             {
-                string fsmName = Convert.ToString(GetProperty(component, "FsmName"));
-                if (string.Equals(fsmName, "ui_list", StringComparison.OrdinalIgnoreCase))
-                {
-                    _uiList = component;
-                    Log("STAG MENU ui_list found");
-                    return _uiList;
-                }
+                string name = Convert.ToString(GetProperty(fsm, "FsmName"));
+                if (string.Equals(name, fsmName, StringComparison.OrdinalIgnoreCase))
+                    return fsm;
             }
-
             return null;
         }
 
-        private void ResolveUnityAndPlayMaker()
+        private object FindFsm(string objectName, string fsmName)
         {
-            if (_gameObjectType != null && _playMakerType != null) return;
+            ResolveTypes();
+            if (objectType == null || playMakerType == null) return null;
 
-            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+            if (findObjectsOfType == null)
             {
-                if (_gameObjectType == null)
-                    _gameObjectType = assembly.GetType("UnityEngine.GameObject", false);
-                if (_playMakerType == null)
-                    _playMakerType = assembly.GetType("HutongGames.PlayMaker.PlayMakerFSM", false);
-                if (_inputType == null)
-                    _inputType = assembly.GetType("UnityEngine.Input", false);
-                if (_keyCodeType == null)
-                    _keyCodeType = assembly.GetType("UnityEngine.KeyCode", false);
-                if (_inputManagerType == null)
-                    _inputManagerType = assembly.GetType("InControl.InputManager", false);
+                MethodInfo[] methods = objectType.GetMethods(BindingFlags.Public | BindingFlags.Static);
+                foreach (MethodInfo m in methods)
+                {
+                    if (m.Name != "FindObjectsOfType") continue;
+                    ParameterInfo[] ps = m.GetParameters();
+                    if (!m.IsGenericMethod && ps.Length == 1 && ps[0].ParameterType == typeof(Type))
+                    {
+                        findObjectsOfType = m;
+                        break;
+                    }
+                }
             }
+            if (findObjectsOfType == null) return null;
 
-            if (_gameObjectType != null && _findGameObject == null)
+            Array fsms = findObjectsOfType.Invoke(null, new object[] { playMakerType }) as Array;
+            if (fsms == null) return null;
+            foreach (object fsm in fsms)
             {
-                _findGameObject = _gameObjectType.GetMethod(
-                    "Find",
-                    BindingFlags.Public | BindingFlags.Static,
-                    null,
-                    new Type[] { typeof(string) },
-                    null);
+                string name = Convert.ToString(GetProperty(fsm, "FsmName"));
+                object go = GetProperty(fsm, "gameObject");
+                string goName = Convert.ToString(GetProperty(go, "name"));
+                if (string.Equals(name, fsmName, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(goName, objectName, StringComparison.OrdinalIgnoreCase))
+                    return fsm;
             }
-
-            if (_inputType != null && _keyCodeType != null && _getKeyDown == null)
-            {
-                _getKeyDown = _inputType.GetMethod(
-                    "GetKeyDown",
-                    BindingFlags.Public | BindingFlags.Static,
-                    null,
-                    new Type[] { _keyCodeType },
-                    null);
-            }
-
-            if (_inputManagerType != null && _devicesProperty == null)
-                _devicesProperty = _inputManagerType.GetProperty("Devices", BindingFlags.Public | BindingFlags.Static);
+            return null;
         }
 
-        private bool KeyPressed(string key)
+        private static string ActiveStateName(object fsm)
+        {
+            object value = GetProperty(fsm, "ActiveStateName");
+            if (value != null) return Convert.ToString(value);
+            object state = GetProperty(fsm, "ActiveState");
+            return Convert.ToString(GetProperty(state, "Name"));
+        }
+
+        private static void SendEvent(object fsm, string evt)
+        {
+            MethodInfo m = fsm.GetType().GetMethod(
+                "SendEvent",
+                BindingFlags.Public | BindingFlags.Instance,
+                null,
+                new Type[] { typeof(string) },
+                null);
+            if (m != null) m.Invoke(fsm, new object[] { evt });
+        }
+
+        private static void TryEnterWithoutInput(object hero)
         {
             try
             {
-                ResolveUnityAndPlayMaker();
-                if (_getKeyDown == null || _keyCodeType == null) return false;
-                object code = Enum.Parse(_keyCodeType, key, true);
-                object value = _getKeyDown.Invoke(null, new object[] { code });
-                return value is bool && (bool)value;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private IEnumerable GetDevices()
-        {
-            ResolveUnityAndPlayMaker();
-            if (_devicesProperty == null) yield break;
-
-            IEnumerable devices = null;
-            try
-            {
-                devices = _devicesProperty.GetValue(null, null) as IEnumerable;
+                MethodInfo m = hero.GetType().GetMethod(
+                    "EnterWithoutInput",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+                    null,
+                    new Type[] { typeof(bool) },
+                    null);
+                if (m != null) m.Invoke(hero, new object[] { true });
             }
             catch { }
-
-            if (devices == null) yield break;
-            foreach (object device in devices)
-                if (device != null) yield return device;
         }
 
-        private static bool ControlPressed(object device, string propertyName)
+        private string CurrentSceneName()
         {
             try
             {
-                PropertyInfo p = device.GetType().GetProperty(propertyName, BindingFlags.Public | BindingFlags.Instance);
-                object control = p == null ? null : p.GetValue(device, null);
-                if (control == null) return false;
-
-                PropertyInfo wasPressed = control.GetType().GetProperty("WasPressed", BindingFlags.Public | BindingFlags.Instance);
-                object value = wasPressed == null ? null : wasPressed.GetValue(control, null);
-                return value is bool && (bool)value;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private static string DeviceName(object device)
-        {
-            try
-            {
-                PropertyInfo p = device.GetType().GetProperty("Name", BindingFlags.Public | BindingFlags.Instance);
-                return "controller:" + Convert.ToString(p == null ? null : p.GetValue(device, null));
-            }
-            catch
-            {
-                return "controller";
-            }
-        }
-
-        private void Send(object ui, string eventName, string source)
-        {
-            try
-            {
-                MethodInfo method = ui.GetType().GetMethod(
-                    "SendEvent",
-                    BindingFlags.Public | BindingFlags.Instance,
-                    null,
-                    new Type[] { typeof(string) },
-                    null);
-
-                if (method == null)
+                foreach (Assembly a in AppDomain.CurrentDomain.GetAssemblies())
                 {
-                    LogError("STAG MENU SendEvent method not found");
-                    return;
+                    Type t = a.GetType("UnityEngine.SceneManagement.SceneManager", false);
+                    if (t == null) continue;
+                    MethodInfo m = t.GetMethod("GetActiveScene", BindingFlags.Public | BindingFlags.Static);
+                    if (m == null) continue;
+                    object scene = m.Invoke(null, null);
+                    object name = GetProperty(scene, "name");
+                    if (name != null) return Convert.ToString(name);
                 }
-
-                Log("STAG MENU " + eventName + " by " + source);
-                method.Invoke(ui, new object[] { eventName });
             }
-            catch (Exception ex)
+            catch { }
+            return "";
+        }
+
+        private void ResolveTypes()
+        {
+            if (playMakerType != null && gameObjectType != null && objectType != null) return;
+            foreach (Assembly a in AppDomain.CurrentDomain.GetAssemblies())
             {
-                _uiList = null;
-                LogError("STAG MENU " + eventName + " failed: " + ex);
+                if (playMakerType == null) playMakerType = a.GetType("HutongGames.PlayMaker.PlayMakerFSM", false);
+                if (gameObjectType == null) gameObjectType = a.GetType("UnityEngine.GameObject", false);
+                if (objectType == null) objectType = a.GetType("UnityEngine.Object", false);
             }
         }
 
         private static object GetProperty(object target, string name)
         {
             if (target == null) return null;
-            PropertyInfo p = target.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            return p == null ? null : p.GetValue(target, null);
+            PropertyInfo p = target.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+            if (p != null) return p.GetValue(target, null);
+            FieldInfo f = target.GetType().GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+            return f == null ? null : f.GetValue(target);
         }
     }
 }
