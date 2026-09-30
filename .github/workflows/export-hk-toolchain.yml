@@ -1,0 +1,43 @@
+name: Export HK Local8 Linux Toolchain
+
+on:
+  push:
+    branches:
+      - chatgpt-hk-alpha84-main
+    paths:
+      - '.github/workflows/export-hk-toolchain.yml'
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Prepare compiler/runtime and references
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p pack/dotnet/host pack/dotnet/shared pack/dotnet/Roslyn pack/net472 pack/api
+          SDKVER="$(dotnet --version)"
+          RUNTIMEVER="$(dotnet --list-runtimes | awk '/Microsoft.NETCore.App/{print $2}' | tail -1)"
+          cp "$(command -v dotnet)" pack/dotnet/dotnet
+          cp -a "/usr/share/dotnet/host/fxr" pack/dotnet/host/
+          mkdir -p "pack/dotnet/shared/Microsoft.NETCore.App"
+          cp -a "/usr/share/dotnet/shared/Microsoft.NETCore.App/$RUNTIMEVER" "pack/dotnet/shared/Microsoft.NETCore.App/"
+          cp -a "/usr/share/dotnet/sdk/$SDKVER/Roslyn/bincore/." pack/dotnet/Roslyn/
+          curl -L --fail --retry 3 -o net472.nupkg https://api.nuget.org/v3-flatcontainer/microsoft.netframework.referenceassemblies.net472/1.0.3/microsoft.netframework.referenceassemblies.net472.1.0.3.nupkg
+          unzip -q net472.nupkg -d net472pkg
+          cp net472pkg/build/.NETFramework/v4.7.2/*.dll pack/net472/
+          curl -L --fail --retry 3 -o api.zip https://github.com/hk-modding/api/releases/download/1.5.78.11833-77/moddingapi.v77.windows.zip
+          unzip -q api.zip -d api_unpack
+          find api_unpack -type f -name '*.dll' -exec cp -t pack/api {} +
+          tar -cJf hk-local8-toolchain.tar.xz -C pack .
+          ls -lh hk-local8-toolchain.tar.xz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hk-local8-toolchain
+          path: hk-local8-toolchain.tar.xz
+          if-no-files-found: error
