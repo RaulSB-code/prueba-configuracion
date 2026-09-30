@@ -1,0 +1,23 @@
+name: Export alpha86 patch archive
+on:
+  workflow_dispatch:
+  push:
+    branches: [chatgpt-hk-alpha86-main]
+    paths: ['.github/workflows/export-alpha86-patch.yml']
+jobs:
+  export:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rebuild archive
+        shell: pwsh
+        run: |
+          $parts=Get-ChildItem a86/patch.part* | Sort-Object Name
+          $b64=($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ''
+          [IO.File]::WriteAllBytes('alpha86-patch.tar.xz',[Convert]::FromBase64String($b64))
+          Get-FileHash alpha86-patch.tar.xz -Algorithm SHA256
+          Write-Host "Size=$((Get-Item alpha86-patch.tar.xz).Length)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alpha86-patch-archive
+          path: alpha86-patch.tar.xz
